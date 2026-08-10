@@ -1,0 +1,4 @@
+# Requirements for the User Management System (UMS)
+# Secure credential validation dependencies
+
+bcrypt>=4.0.1
