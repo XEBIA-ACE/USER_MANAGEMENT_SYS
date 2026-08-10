@@ -1,1 +1,4 @@
-This document governs the creation of a user profile feature in the application. Key principles include ensuring GDPR compliance when storing and managing user data, as well as maintaining integration points with the email delivery system to confirm successful registrations. Coding standards require structured error handling and adherence to existing project architecture. Non-functional requirements stress performance metrics such as confirmation email delivery within 60 seconds of profile creation.
+##### Non-functional Requirements 
+- **Security**: Implement secure data handling practices for user information.
+- **Scalability**: Ensure the solution can handle a growing number of users efficiently.
+- **Performance**: Minimize latency in email dispatch and form submission.

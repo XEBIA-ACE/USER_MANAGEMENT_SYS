@@ -1,6 +1,17 @@
-- [ ] Update BACKEND/src/routes/user-profile.routes.ts: add route to handle user profile creation
-- [ ] Implement BACKEND/src/services/user-profile.service.ts: handle data validation and profile persistence
-- [ ] Create BACKEND/src/services/user-profile.service.test.ts: write unit tests for UserProfileService
-- [ ] Modify BACKEND/src/adapters/sendgrid-email.adapter.ts: ensure confirmation emails are sent upon successful profile creation
-- [ ] Update DOCS/API_REFERENCE.md with new endpoint documentation
-- [ ] Review completed implementation with Product Owner for final acceptance
+##### Tasks Breakdown
+1. **Design Registration Form**:
+   - Develop the UI for the registration form. (Frontend)
+   - Integrate form into the existing webpage/application.
+   
+2. **Implement Email Check & User Storage**:
+   - Develop functionality to check email uniqueness (Backend).
+   - Implement secure storage of user details in the database.
+  
+3. **Setup Confirmation Email**:
+   - Configure email service for sending out registration confirmations.
+   - Validate email content and sending logic.
+  
+4. **Testing & Validation**:
+   - Perform unit tests for each component.
+   - Execute integration tests to ensure seamless functionality.
+   - Conduct manual testing to verify UX/UI requirements.
