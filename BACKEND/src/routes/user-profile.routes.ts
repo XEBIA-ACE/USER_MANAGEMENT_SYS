@@ -1,39 +1,27 @@
-/**
- * user-profile.routes.ts
- *
- * Factory function that wires UserProfileService dependencies and returns an
- * Express Router with:
- *   GET /me   (behind SessionValidationMiddleware)
- * Parent app mounts this at /api/v1/users.
- *
- * sessionService is accepted as a parameter for the same reason
- * deletion.routes.ts accepts it — callers supply the same instance used
- * elsewhere in the app, matching SessionValidationMiddleware's role as a
- * cross-cutting guard (US-038 A-003).
- */
+```typescript
+import { Router, Request, Response } from 'express';
+import { UserProfileService } from '../services/user-profile.service';
+import { SendGridEmailAdapter } from '../adapters/sendgrid-email.adapter';
 
-import { Router } from 'express';
-import type { Database } from 'better-sqlite3';
-import { UserRepository } from '../repositories/user.repository';
-import { SessionRepository } from '../repositories/session.repository';
-import { DefaultUserProfileService } from '../services/user-profile.service';
-import { UserProfileController } from '../controllers/user-profile.controller';
-import { SessionService } from '../services/session.service';
-import { createSessionValidationMiddleware } from '../middleware/session-validation.middleware';
-
-export function createUserProfileRouter(db: Database, sessionService: SessionService): Router {
+export function createUserProfileRouter(): Router {
   const router = Router();
+  const userProfileService = new UserProfileService();
+  const emailAdapter = new SendGridEmailAdapter();
 
-  const controller = new UserProfileController(
-    new DefaultUserProfileService(new UserRepository(db), new SessionRepository(db)),
-  );
+  router.post('/', async (req: Request, res: Response) => {
+    try {
+      const { email, name } = req.body;
+      await userProfileService.createProfile(email, name);
 
-  const requireSession = createSessionValidationMiddleware(sessionService);
+      // Send confirmation email
+      await emailAdapter.sendUserProfileConfirmationEmail(email, name);
 
-  // GET /api/v1/users/me
-  router.get('/me', requireSession, (req, res) => {
-    void controller.getMe(req, res);
+      res.status(201).json({ message: 'User profile created successfully and confirmation email sent.' });
+    } catch (error) {
+      res.status(500).json({ error: 'An error occurred while creating user profile.' });
+    }
   });
 
   return router;
 }
+```

@@ -1,45 +1,21 @@
-/**
- * user-profile.service.ts
- *
- * Backs GET /api/v1/users/me: returns the calling (session-authenticated)
- * user's own profile plus their current active-session count.
- */
+```typescript
+import { UserRepository } from '../repositories/user.repository';
 
-import { IUserRepository } from '../repositories/user.repository';
-import { ISessionRepository } from '../repositories/session.repository';
-import { UserProfileResult } from '../types/user-profile.types';
-import { UserNotFoundException } from '../errors/registration.errors';
+export class UserProfileService {
+  private userRepository: UserRepository;
 
-export interface UserProfileService {
-  getProfile(userId: string): Promise<UserProfileResult>;
-}
+  constructor() {
+    this.userRepository = new UserRepository();
+  }
 
-export class DefaultUserProfileService implements UserProfileService {
-  constructor(
-    private readonly userRepository: IUserRepository,
-    private readonly sessionRepository: ISessionRepository,
-  ) {}
-
-  /**
-   * @throws UserNotFoundException - the session's owning user record is gone
-   *         (shouldn't happen in the normal path — SessionValidationMiddleware
-   *         already resolved this userId from a valid session).
-   */
-  async getProfile(userId: string): Promise<UserProfileResult> {
-    const user = await this.userRepository.findById(userId);
-    if (user === null) {
-      throw new UserNotFoundException(userId);
+  async createProfile(email: string, name: string): Promise<void> {
+    // Simple validation
+    if (!email || !name) {
+      throw new Error('Email and name are required.');
     }
 
-    const activeSessions = await this.sessionRepository.countActiveForUser(userId);
-
-    return {
-      username: user.username,
-      email: user.email,
-      status: user.status,
-      registrationTimestamp: user.registrationTimestamp,
-      lastLoginAt: user.lastLoginAt,
-      activeSessions,
-    };
+    const user = { email, name, createdAt: new Date() };
+    await this.userRepository.addUser(user);
   }
 }
+```

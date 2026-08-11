@@ -1,0 +1,22 @@
+{
+  "name": "ums-backend",
+  "version": "1.0.0",
+  "description": "User Management System – backend service",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest --runInBand --forceExit",
+    "test:coverage": "jest --runInBand --forceExit --coverage"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.13"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/*.test.js"
+    ]
+  }
+}
