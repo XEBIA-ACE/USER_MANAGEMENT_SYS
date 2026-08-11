@@ -1,0 +1,203 @@
+/*
+ * RegistrationForm.css
+ *
+ * Scoped styles for the RegistrationForm component.
+ * Uses CSS custom properties so the form automatically inherits
+ * any global theme tokens defined in index.css / App.css.
+ *
+ * Responsive breakpoints:
+ *   - Default  : single-column layout (mobile-first)
+ *   - ≥ 480 px : two-column name row
+ *   - ≥ 768 px : card gains more horizontal padding
+ */
+
+/* ── Layout wrapper ─────────────────────────────────────────────────────── */
+.rf-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 100vh;
+  padding: 2rem 1rem;
+  background-color: var(--color-bg, #f5f7fa);
+}
+
+/* ── Card ───────────────────────────────────────────────────────────────── */
+.rf-card {
+  background: var(--color-surface, #ffffff);
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+  padding: 2rem 1.5rem;
+  width: 100%;
+  max-width: 520px;
+}
+
+@media (min-width: 768px) {
+  .rf-card {
+    padding: 2.5rem 3rem;
+  }
+}
+
+/* ── Headings ───────────────────────────────────────────────────────────── */
+.rf-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #1a1a2e);
+  margin: 0 0 0.25rem;
+}
+
+.rf-subtitle {
+  font-size: 0.95rem;
+  color: var(--color-text-secondary, #6b7280);
+  margin: 0 0 1.5rem;
+}
+
+/* ── Alerts ─────────────────────────────────────────────────────────────── */
+.rf-alert {
+  border-radius: var(--radius-sm, 6px);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.rf-alert--success {
+  background-color: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #6ee7b7;
+}
+
+.rf-alert--error {
+  background-color: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
+/* ── Form ───────────────────────────────────────────────────────────────── */
+.rf-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* Two-column row for first / last name */
+.rf-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+@media (min-width: 480px) {
+  .rf-row {
+    flex-direction: row;
+    gap: 1rem;
+  }
+
+  .rf-row .rf-field {
+    flex: 1;
+  }
+}
+
+/* ── Field ──────────────────────────────────────────────────────────────── */
+.rf-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+/* ── Label ──────────────────────────────────────────────────────────────── */
+.rf-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #1a1a2e);
+}
+
+.rf-required {
+  color: var(--color-danger, #dc2626);
+  margin-left: 2px;
+}
+
+/* ── Input ──────────────────────────────────────────────────────────────── */
+.rf-input {
+  height: 2.75rem;
+  padding: 0 0.875rem;
+  border: 1.5px solid var(--color-border, #d1d5db);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.95rem;
+  color: var(--color-text-primary, #1a1a2e);
+  background: var(--color-surface, #ffffff);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.rf-input::placeholder {
+  color: var(--color-placeholder, #9ca3af);
+}
+
+.rf-input:focus {
+  outline: none;
+  border-color: var(--color-primary, #4f46e5);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+
+.rf-input--error {
+  border-color: var(--color-danger, #dc2626);
+}
+
+.rf-input--error:focus {
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15);
+}
+
+/* ── Error message ──────────────────────────────────────────────────────── */
+.rf-error-msg {
+  font-size: 0.8rem;
+  color: var(--color-danger, #dc2626);
+}
+
+/* ── Submit button ──────────────────────────────────────────────────────── */
+.rf-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.75rem;
+  padding: 0 1.5rem;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.rf-btn--primary {
+  background-color: var(--color-primary, #4f46e5);
+  color: #ffffff;
+}
+
+.rf-btn--primary:hover:not(:disabled) {
+  background-color: var(--color-primary-dark, #4338ca);
+}
+
+.rf-btn--primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Footer text ────────────────────────────────────────────────────────── */
+.rf-footer-text {
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #6b7280);
+  margin-top: 1.25rem;
+}
+
+.rf-link {
+  color: var(--color-primary, #4f46e5);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.rf-link:hover {
+  text-decoration: underline;
+}
