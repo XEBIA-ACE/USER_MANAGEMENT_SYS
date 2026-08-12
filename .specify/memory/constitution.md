@@ -1,11 +1,4 @@
-### Non-Functional Requirements and Constraints
-
-1. **Security:**
-   - The system must comply with security standards for handling user credentials.
-   - Passwords must be securely hashed and salted.
-
-2. **Performance:**
-   - The login process should be efficient with minimal delay.
-
-3. **Compatibility:**
-   - The application should work uniformly across supported devices and browsers.
+- Ensure that all code follows established coding standards and principles in place for the 'User_Management' application.
+- Maintain a high standard of test coverage for all modifications, incorporating both unit and integration tests to verify role adjustments.
+- Prioritize backward compatibility to ensure that changes do not disrupt existing workflows or user permissions suddenly, particularly in heterogeneous active user environments.
+- Regularly update and maintain documentation post-implementation to reflect current accurate system capabilities and agreements.
