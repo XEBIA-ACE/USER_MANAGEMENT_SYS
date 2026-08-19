@@ -2,23 +2,41 @@ name: CD Deploy (Reusable)
 'on':
   workflow_call:
     inputs:
-      image_tag:
-        description: Container image tag (SHA) to deploy
-        required: true
-        type: string
-      service_name:
-        description: Service name to deploy
+      image_sha:
+        description: Full commit SHA whose CI-built images should be deployed
         required: true
         type: string
       health_check_url:
-        description: Health check endpoint URL
-        required: true
+        description: External health check URL. Empty = derive from Ingress/LoadBalancer
+          endpoint.
+        required: false
         type: string
+        default: ''
       health_check_timeout:
         description: Health check timeout in seconds
         required: false
         type: number
         default: 300
+      ecr_registry:
+        description: Container registry host (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com)
+        required: false
+        type: string
+        default: ''
+      aws_region:
+        description: AWS region
+        required: false
+        type: string
+        default: us-east-1
+      cluster_name:
+        description: Kubernetes cluster name (EKS/GKE)
+        required: false
+        type: string
+        default: ''
+      namespace:
+        description: Kubernetes namespace for deployment
+        required: false
+        type: string
+        default: default
 permissions:
   id-token: write
   contents: read
@@ -29,12 +47,82 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-    - name: Deploy (dev) - NO TARGET CONFIGURED
-      run: 'echo ''::error::No deployment target detected for this repository. CD
-        cannot deploy. Configure a deployment target (ECS/ACA/GKE/Kubernetes) via
-        policy/detection and re-generate.''
-
-        exit 1'
+    - name: Compute image tag
+      id: tag
+      run: echo "tag=sha-$(echo '${{ inputs.image_sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ inputs.aws_region }}
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: v1.32.3
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region '${{ inputs.aws_region }}' --name '${{
+        inputs.cluster_name }}'
+    - name: Verify namespace access
+      run: "# Smoke-test the namespace-scoped access entry before mutating anything.\n\
+        NS=\"${{ inputs.namespace }}\"\nif [ \"$(kubectl auth can-i create deployment\
+        \ -n \"$NS\")\" != \"yes\" ]; then\n  echo \"::error::Deploy role cannot create\
+        \ deployments in namespace $NS. Check the EKS access entry / IAM policy association\
+        \ for the deploy role.\"\n  exit 1\nfi"
+    - name: Set images in Kustomize overlay
+      working-directory: k8s/overlays/dev
+      env:
+        TAG: ${{ steps.tag.outputs.tag }}
+      run: "# kustomize edit updates kustomization.yaml declaratively; kubectl set\n\
+        # image would be reverted by the next apply. Install kustomize if needed.\n\
+        if ! command -v kustomize >/dev/null 2>&1; then\n  curl -sSLo /tmp/kustomize.tar.gz\
+        \ \"https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz\"\
+        \n  tar -xzf /tmp/kustomize.tar.gz -C /tmp\n  sudo mv /tmp/kustomize /usr/local/bin/kustomize\n\
+        fi\n# Update image references \u2014 customize per your service names\nkustomize\
+        \ edit set image \\\n  \"app=${{ inputs.ecr_registry }}/app:$TAG\"\necho \"\
+        --- resolved kustomization.yaml ---\"\ncat kustomization.yaml"
+    - name: Apply manifests
+      run: kubectl apply -k k8s/overlays/dev
+    - name: Wait for rollouts
+      run: "# Explicit timeouts \u2014 kubectl's default is infinite and would hang\
+        \ the\n# runner on a stuck rollout.\nNS=\"${{ inputs.namespace }}\"\nfor deploy\
+        \ in $(kubectl get deployments -n \"$NS\" -o jsonpath='{.items[*].metadata.name}');\
+        \ do\n  echo \"Waiting for $deploy...\"\n  kubectl rollout status deployment/$deploy\
+        \ -n \"$NS\" --timeout=5m\ndone"
+    - name: Resolve service endpoint
+      id: endpoint
+      run: "NS=\"${{ inputs.namespace }}\"\n# Try Ingress first, then LoadBalancer\
+        \ service\nfor i in $(seq 1 30); do\n  ENDPOINT=$(kubectl get ingress -n \"\
+        $NS\" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null\
+        \ || true)\n  if [ -z \"$ENDPOINT\" ]; then\n    ENDPOINT=$(kubectl get svc\
+        \ -n \"$NS\" -o jsonpath='{.items[?(@.spec.type==\"LoadBalancer\")].status.loadBalancer.ingress[0].hostname}'\
+        \ 2>/dev/null || true)\n  fi\n  if [ -n \"$ENDPOINT\" ]; then\n    echo \"\
+        hostname=$ENDPOINT\" >> \"$GITHUB_OUTPUT\"\n    echo \"Endpoint: $ENDPOINT\"\
+        \n    exit 0\n  fi\n  echo \"Waiting for endpoint... ($i/30)\"\n  sleep 10\n\
+        done\necho \"::warning::No external endpoint found after 5 minutes. Health\
+        \ check will use configured URL.\""
+    - name: Health check
+      env:
+        TIMEOUT: ${{ inputs.health_check_timeout }}
+      run: "URL='${{ inputs.health_check_url }}'\nif [ -z \"$URL\" ]; then\n  ENDPOINT=\"\
+        ${{ steps.endpoint.outputs.hostname }}\"\n  if [ -n \"$ENDPOINT\" ]; then\n\
+        \    URL=\"http://$ENDPOINT/health\"\n  else\n    echo \"::warning::No health\
+        \ check URL configured and no endpoint resolved. Skipping.\"\n    exit 0\n\
+        \  fi\nfi\necho \"Probing $URL (timeout ${TIMEOUT}s)\"\ndeadline=$((SECONDS\
+        \ + TIMEOUT))\nwhile [ $SECONDS -lt $deadline ]; do\n  if curl -sfm 10 \"\
+        $URL\"; then\n    echo \"\"\n    echo \"\u2713 Health check passed\"\n   \
+        \ exit 0\n  fi\n  echo \"Not healthy yet, retrying in 10s...\"\n  sleep 10\n\
+        done\necho \"::error::Health check did not pass within ${TIMEOUT}s: $URL\"\
+        \nexit 1"
+    - name: Diagnostics on failure
+      if: failure()
+      run: "NS=\"${{ inputs.namespace }}\"\necho \"=== Pods ===\"\nkubectl get pods\
+        \ -n \"$NS\" -o wide || true\necho \"=== Events (most recent) ===\"\nkubectl\
+        \ get events -n \"$NS\" --sort-by=.lastTimestamp | tail -40 || true\necho\
+        \ \"=== Deployments ===\"\nkubectl describe deployment -n \"$NS\" || true\n\
+        echo \"=== Recent logs ===\"\nfor deploy in $(kubectl get deployments -n \"\
+        $NS\" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do\n  echo \"\
+        --- $deploy ---\"\n  kubectl logs -n \"$NS\" \"deployment/$deploy\" --tail=50\
+        \ --all-containers || true\ndone"
   deploy-staging:
     runs-on: ubuntu-latest
     environment: staging
@@ -43,12 +131,82 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-    - name: Deploy (staging) - NO TARGET CONFIGURED
-      run: 'echo ''::error::No deployment target detected for this repository. CD
-        cannot deploy. Configure a deployment target (ECS/ACA/GKE/Kubernetes) via
-        policy/detection and re-generate.''
-
-        exit 1'
+    - name: Compute image tag
+      id: tag
+      run: echo "tag=sha-$(echo '${{ inputs.image_sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ inputs.aws_region }}
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: v1.32.3
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region '${{ inputs.aws_region }}' --name '${{
+        inputs.cluster_name }}'
+    - name: Verify namespace access
+      run: "# Smoke-test the namespace-scoped access entry before mutating anything.\n\
+        NS=\"${{ inputs.namespace }}\"\nif [ \"$(kubectl auth can-i create deployment\
+        \ -n \"$NS\")\" != \"yes\" ]; then\n  echo \"::error::Deploy role cannot create\
+        \ deployments in namespace $NS. Check the EKS access entry / IAM policy association\
+        \ for the deploy role.\"\n  exit 1\nfi"
+    - name: Set images in Kustomize overlay
+      working-directory: k8s/overlays/staging
+      env:
+        TAG: ${{ steps.tag.outputs.tag }}
+      run: "# kustomize edit updates kustomization.yaml declaratively; kubectl set\n\
+        # image would be reverted by the next apply. Install kustomize if needed.\n\
+        if ! command -v kustomize >/dev/null 2>&1; then\n  curl -sSLo /tmp/kustomize.tar.gz\
+        \ \"https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz\"\
+        \n  tar -xzf /tmp/kustomize.tar.gz -C /tmp\n  sudo mv /tmp/kustomize /usr/local/bin/kustomize\n\
+        fi\n# Update image references \u2014 customize per your service names\nkustomize\
+        \ edit set image \\\n  \"app=${{ inputs.ecr_registry }}/app:$TAG\"\necho \"\
+        --- resolved kustomization.yaml ---\"\ncat kustomization.yaml"
+    - name: Apply manifests
+      run: kubectl apply -k k8s/overlays/staging
+    - name: Wait for rollouts
+      run: "# Explicit timeouts \u2014 kubectl's default is infinite and would hang\
+        \ the\n# runner on a stuck rollout.\nNS=\"${{ inputs.namespace }}\"\nfor deploy\
+        \ in $(kubectl get deployments -n \"$NS\" -o jsonpath='{.items[*].metadata.name}');\
+        \ do\n  echo \"Waiting for $deploy...\"\n  kubectl rollout status deployment/$deploy\
+        \ -n \"$NS\" --timeout=5m\ndone"
+    - name: Resolve service endpoint
+      id: endpoint
+      run: "NS=\"${{ inputs.namespace }}\"\n# Try Ingress first, then LoadBalancer\
+        \ service\nfor i in $(seq 1 30); do\n  ENDPOINT=$(kubectl get ingress -n \"\
+        $NS\" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null\
+        \ || true)\n  if [ -z \"$ENDPOINT\" ]; then\n    ENDPOINT=$(kubectl get svc\
+        \ -n \"$NS\" -o jsonpath='{.items[?(@.spec.type==\"LoadBalancer\")].status.loadBalancer.ingress[0].hostname}'\
+        \ 2>/dev/null || true)\n  fi\n  if [ -n \"$ENDPOINT\" ]; then\n    echo \"\
+        hostname=$ENDPOINT\" >> \"$GITHUB_OUTPUT\"\n    echo \"Endpoint: $ENDPOINT\"\
+        \n    exit 0\n  fi\n  echo \"Waiting for endpoint... ($i/30)\"\n  sleep 10\n\
+        done\necho \"::warning::No external endpoint found after 5 minutes. Health\
+        \ check will use configured URL.\""
+    - name: Health check
+      env:
+        TIMEOUT: ${{ inputs.health_check_timeout }}
+      run: "URL='${{ inputs.health_check_url }}'\nif [ -z \"$URL\" ]; then\n  ENDPOINT=\"\
+        ${{ steps.endpoint.outputs.hostname }}\"\n  if [ -n \"$ENDPOINT\" ]; then\n\
+        \    URL=\"http://$ENDPOINT/health\"\n  else\n    echo \"::warning::No health\
+        \ check URL configured and no endpoint resolved. Skipping.\"\n    exit 0\n\
+        \  fi\nfi\necho \"Probing $URL (timeout ${TIMEOUT}s)\"\ndeadline=$((SECONDS\
+        \ + TIMEOUT))\nwhile [ $SECONDS -lt $deadline ]; do\n  if curl -sfm 10 \"\
+        $URL\"; then\n    echo \"\"\n    echo \"\u2713 Health check passed\"\n   \
+        \ exit 0\n  fi\n  echo \"Not healthy yet, retrying in 10s...\"\n  sleep 10\n\
+        done\necho \"::error::Health check did not pass within ${TIMEOUT}s: $URL\"\
+        \nexit 1"
+    - name: Diagnostics on failure
+      if: failure()
+      run: "NS=\"${{ inputs.namespace }}\"\necho \"=== Pods ===\"\nkubectl get pods\
+        \ -n \"$NS\" -o wide || true\necho \"=== Events (most recent) ===\"\nkubectl\
+        \ get events -n \"$NS\" --sort-by=.lastTimestamp | tail -40 || true\necho\
+        \ \"=== Deployments ===\"\nkubectl describe deployment -n \"$NS\" || true\n\
+        echo \"=== Recent logs ===\"\nfor deploy in $(kubectl get deployments -n \"\
+        $NS\" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do\n  echo \"\
+        --- $deploy ---\"\n  kubectl logs -n \"$NS\" \"deployment/$deploy\" --tail=50\
+        \ --all-containers || true\ndone"
   deploy-prod:
     runs-on: ubuntu-latest
     environment: prod
@@ -57,9 +215,79 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-    - name: Deploy (prod) - NO TARGET CONFIGURED
-      run: 'echo ''::error::No deployment target detected for this repository. CD
-        cannot deploy. Configure a deployment target (ECS/ACA/GKE/Kubernetes) via
-        policy/detection and re-generate.''
-
-        exit 1'
+    - name: Compute image tag
+      id: tag
+      run: echo "tag=sha-$(echo '${{ inputs.image_sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v6
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ inputs.aws_region }}
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v4
+      with:
+        version: v1.32.3
+    - name: Update kubeconfig
+      run: aws eks update-kubeconfig --region '${{ inputs.aws_region }}' --name '${{
+        inputs.cluster_name }}'
+    - name: Verify namespace access
+      run: "# Smoke-test the namespace-scoped access entry before mutating anything.\n\
+        NS=\"${{ inputs.namespace }}\"\nif [ \"$(kubectl auth can-i create deployment\
+        \ -n \"$NS\")\" != \"yes\" ]; then\n  echo \"::error::Deploy role cannot create\
+        \ deployments in namespace $NS. Check the EKS access entry / IAM policy association\
+        \ for the deploy role.\"\n  exit 1\nfi"
+    - name: Set images in Kustomize overlay
+      working-directory: k8s/overlays/prod
+      env:
+        TAG: ${{ steps.tag.outputs.tag }}
+      run: "# kustomize edit updates kustomization.yaml declaratively; kubectl set\n\
+        # image would be reverted by the next apply. Install kustomize if needed.\n\
+        if ! command -v kustomize >/dev/null 2>&1; then\n  curl -sSLo /tmp/kustomize.tar.gz\
+        \ \"https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz\"\
+        \n  tar -xzf /tmp/kustomize.tar.gz -C /tmp\n  sudo mv /tmp/kustomize /usr/local/bin/kustomize\n\
+        fi\n# Update image references \u2014 customize per your service names\nkustomize\
+        \ edit set image \\\n  \"app=${{ inputs.ecr_registry }}/app:$TAG\"\necho \"\
+        --- resolved kustomization.yaml ---\"\ncat kustomization.yaml"
+    - name: Apply manifests
+      run: kubectl apply -k k8s/overlays/prod
+    - name: Wait for rollouts
+      run: "# Explicit timeouts \u2014 kubectl's default is infinite and would hang\
+        \ the\n# runner on a stuck rollout.\nNS=\"${{ inputs.namespace }}\"\nfor deploy\
+        \ in $(kubectl get deployments -n \"$NS\" -o jsonpath='{.items[*].metadata.name}');\
+        \ do\n  echo \"Waiting for $deploy...\"\n  kubectl rollout status deployment/$deploy\
+        \ -n \"$NS\" --timeout=5m\ndone"
+    - name: Resolve service endpoint
+      id: endpoint
+      run: "NS=\"${{ inputs.namespace }}\"\n# Try Ingress first, then LoadBalancer\
+        \ service\nfor i in $(seq 1 30); do\n  ENDPOINT=$(kubectl get ingress -n \"\
+        $NS\" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}' 2>/dev/null\
+        \ || true)\n  if [ -z \"$ENDPOINT\" ]; then\n    ENDPOINT=$(kubectl get svc\
+        \ -n \"$NS\" -o jsonpath='{.items[?(@.spec.type==\"LoadBalancer\")].status.loadBalancer.ingress[0].hostname}'\
+        \ 2>/dev/null || true)\n  fi\n  if [ -n \"$ENDPOINT\" ]; then\n    echo \"\
+        hostname=$ENDPOINT\" >> \"$GITHUB_OUTPUT\"\n    echo \"Endpoint: $ENDPOINT\"\
+        \n    exit 0\n  fi\n  echo \"Waiting for endpoint... ($i/30)\"\n  sleep 10\n\
+        done\necho \"::warning::No external endpoint found after 5 minutes. Health\
+        \ check will use configured URL.\""
+    - name: Health check
+      env:
+        TIMEOUT: ${{ inputs.health_check_timeout }}
+      run: "URL='${{ inputs.health_check_url }}'\nif [ -z \"$URL\" ]; then\n  ENDPOINT=\"\
+        ${{ steps.endpoint.outputs.hostname }}\"\n  if [ -n \"$ENDPOINT\" ]; then\n\
+        \    URL=\"http://$ENDPOINT/health\"\n  else\n    echo \"::warning::No health\
+        \ check URL configured and no endpoint resolved. Skipping.\"\n    exit 0\n\
+        \  fi\nfi\necho \"Probing $URL (timeout ${TIMEOUT}s)\"\ndeadline=$((SECONDS\
+        \ + TIMEOUT))\nwhile [ $SECONDS -lt $deadline ]; do\n  if curl -sfm 10 \"\
+        $URL\"; then\n    echo \"\"\n    echo \"\u2713 Health check passed\"\n   \
+        \ exit 0\n  fi\n  echo \"Not healthy yet, retrying in 10s...\"\n  sleep 10\n\
+        done\necho \"::error::Health check did not pass within ${TIMEOUT}s: $URL\"\
+        \nexit 1"
+    - name: Diagnostics on failure
+      if: failure()
+      run: "NS=\"${{ inputs.namespace }}\"\necho \"=== Pods ===\"\nkubectl get pods\
+        \ -n \"$NS\" -o wide || true\necho \"=== Events (most recent) ===\"\nkubectl\
+        \ get events -n \"$NS\" --sort-by=.lastTimestamp | tail -40 || true\necho\
+        \ \"=== Deployments ===\"\nkubectl describe deployment -n \"$NS\" || true\n\
+        echo \"=== Recent logs ===\"\nfor deploy in $(kubectl get deployments -n \"\
+        $NS\" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do\n  echo \"\
+        --- $deploy ---\"\n  kubectl logs -n \"$NS\" \"deployment/$deploy\" --tail=50\
+        \ --all-containers || true\ndone"

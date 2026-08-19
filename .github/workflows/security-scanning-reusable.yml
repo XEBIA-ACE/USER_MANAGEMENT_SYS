@@ -1,0 +1,113 @@
+name: Security Scanning - Snyk (Reusable)
+'on':
+  workflow_call:
+    inputs:
+      scan_types:
+        description: Comma-separated list of scan types to run (sca,container,sast,iac,sbom)
+        required: false
+        type: string
+        default: sca,container,sast,iac,sbom
+      severity_threshold:
+        description: Minimum severity to fail on (CRITICAL,HIGH,MEDIUM,LOW)
+        required: false
+        type: string
+        default: CRITICAL,HIGH
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+env:
+  SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+jobs:
+  sca:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Snyk CLI
+      run: npm install -g snyk && snyk auth $SNYK_TOKEN
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Snyk SCA scan - BACKEND/package.json
+      run: snyk test --severity-threshold=high --file=package.json --sarif-file-output="$GITHUB_WORKSPACE/snyk-sca-0.sarif"
+      working-directory: BACKEND
+    - name: Upload snyk-sca-0 SARIF results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always() && hashFiles('snyk-sca-0.sarif') != ''
+      continue-on-error: true
+      with:
+        sarif_file: snyk-sca-0.sarif
+        category: snyk-sca-0
+    - name: Snyk SCA scan - FRONTEND/package.json
+      run: snyk test --severity-threshold=high --file=package.json --sarif-file-output="$GITHUB_WORKSPACE/snyk-sca-1.sarif"
+      working-directory: FRONTEND
+    - name: Upload snyk-sca-1 SARIF results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always() && hashFiles('snyk-sca-1.sarif') != ''
+      continue-on-error: true
+      with:
+        sarif_file: snyk-sca-1.sarif
+        category: snyk-sca-1
+  container:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Snyk CLI
+      run: npm install -g snyk && snyk auth $SNYK_TOKEN
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Build image for scanning
+      uses: docker/build-push-action@v5
+      with:
+        context: BACKEND
+        file: BACKEND/Dockerfile
+        push: false
+        load: true
+        tags: scan-target:${{ github.sha }}
+    - name: Snyk Container scan
+      run: snyk container test --severity-threshold=high scan-target:${{ github.sha }} --sarif-file-output=snyk-container.sarif
+    - name: Upload snyk-container SARIF results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always() && hashFiles('snyk-container.sarif') != ''
+      continue-on-error: true
+      with:
+        sarif_file: snyk-container.sarif
+        category: snyk-container
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Snyk CLI
+      run: npm install -g snyk && snyk auth $SNYK_TOKEN
+    - name: Snyk SAST scan
+      run: snyk code test --severity-threshold=high --sarif-file-output=snyk-sast.sarif
+    - name: Upload snyk-sast SARIF results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always() && hashFiles('snyk-sast.sarif') != ''
+      continue-on-error: true
+      with:
+        sarif_file: snyk-sast.sarif
+        category: snyk-sast
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Snyk CLI
+      run: npm install -g snyk && snyk auth $SNYK_TOKEN
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Generate SBOM (Snyk)
+      run: snyk sbom --file=package.json --format=cyclonedx1.4+json > "$GITHUB_WORKSPACE/sbom.cyclonedx.json"
+      working-directory: BACKEND
+    - name: Upload SBOM as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom
+        path: sbom.cyclonedx.json
