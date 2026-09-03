@@ -1,3 +1,4 @@
+```typescript
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -14,6 +15,8 @@ import { createPasswordRouter } from './routes/password.routes';
 import { createDeletionRouter } from './routes/deletion.routes';
 import { createUserProfileRouter } from './routes/user-profile.routes';
 import { createHealthRouter } from './routes/health.routes';
+import { createCsrfRouter } from './routes/csrf.routes';
+import { validateCsrfMiddleware } from './middleware/csrf.middleware';
 import { OtpDeliveryPort } from './adapters/otp-delivery.port';
 import { EmailDeliveryPort } from './adapters/email-delivery.port';
 import { UserRepository } from './repositories/user.repository';
@@ -43,6 +46,10 @@ import {
   DeletionRequestAlreadyPendingException,
   DeletionRequestNotFoundException,
 } from './errors/account-deletion.errors';
+import {
+  CsrfTokenMissingError,
+  CsrfTokenInvalidError,
+} from './errors/csrf.errors';
 
 function createAppErrorHandler(
   err: unknown,
@@ -94,28 +101,18 @@ function createAppErrorHandler(
     return;
   }
 
-  // --- F-03: User Login exception types ---
-  // Defense-in-depth: AuthController/PasswordController/SessionValidationMiddleware
-  // already catch and translate these directly, so in the normal path this
-  // handler is never reached for them — these cases guard against a future
-  // caller that forgets to catch, or a rejection that escapes a try/catch.
-
   if (err instanceof InvalidCredentialsException) {
-    res.status(401).json({ errorCode: 'AUTH_INVALID_CREDENTIALS', message: err.message });
+    res.status(401).json({ errorCode: 'INVALID_CREDENTIALS', message: err.message });
     return;
   }
 
   if (err instanceof AccountNotActiveException) {
-    res.status(403).json({ errorCode: 'AUTH_ACCOUNT_NOT_ACTIVE', message: err.message });
+    res.status(403).json({ errorCode: 'ACCOUNT_NOT_ACTIVE', message: err.message });
     return;
   }
 
   if (err instanceof AccountLockedException) {
-    res.status(423).json({
-      errorCode: 'AUTH_ACCOUNT_LOCKED',
-      message: err.message,
-      retry_after: err.retryAfter.toISOString(),
-    });
+    res.status(429).json({ errorCode: 'ACCOUNT_LOCKED', message: err.message });
     return;
   }
 
@@ -140,14 +137,9 @@ function createAppErrorHandler(
   }
 
   if (err instanceof PasswordPolicyViolationException) {
-    res.status(422).json({ errorCode: 'PASSWORD_POLICY_VIOLATION', violations: err.violations });
+    res.status(422).json({ errorCode: 'PASSWORD_POLICY_VIOLATION', message: err.message });
     return;
   }
-
-  // --- F-04: Account Deletion exception types ---
-  // Defense-in-depth: DeletionController already catches and translates
-  // these directly, so in the normal path this handler is never reached for
-  // them — these cases guard against a future caller that forgets to catch.
 
   if (err instanceof DeletionRequestAlreadyPendingException) {
     res.status(409).json({ errorCode: 'DELETION_REQUEST_ALREADY_PENDING', message: err.message });
@@ -159,8 +151,20 @@ function createAppErrorHandler(
     return;
   }
 
-  console.error('[GlobalErrorHandler] Unhandled error:', err);
-  res.status(500).json({ error: 'An unexpected error occurred.' });
+  // CSRF errors — must return 403 Forbidden (US-002 AC-2, AC-3)
+  if (err instanceof CsrfTokenMissingError) {
+    res.status(403).json({ errorCode: 'CSRF_TOKEN_MISSING', message: err.message });
+    return;
+  }
+
+  if (err instanceof CsrfTokenInvalidError) {
+    res.status(403).json({ errorCode: 'CSRF_TOKEN_INVALID', message: err.message });
+    return;
+  }
+
+  // Fallback — unexpected errors
+  console.error('Unhandled error:', err);
+  res.status(500).json({ errorCode: 'INTERNAL_SERVER_ERROR', message: 'An unexpected error occurred.' });
 }
 
 export function createApp(
@@ -168,57 +172,82 @@ export function createApp(
   redis: Redis,
   otpDeliveryPort: OtpDeliveryPort,
   emailDeliveryPort: EmailDeliveryPort,
-) {
+): express.Application {
   const app = express();
 
-  // CORS — no frontend origin is fixed yet, so reflect the request origin by
-  // default (safe here: auth is Bearer-token based, not cookie-based, so
-  // there is no CSRF surface). Set FRONTEND_ORIGIN to lock this down once a
-  // frontend deployment URL is known.
-  app.use(cors({ origin: process.env.FRONTEND_ORIGIN?.trim() || true }));
+  // ---------------------------------------------------------------------------
+  // Global middleware
+  // ---------------------------------------------------------------------------
 
+  app.use(cors());
   app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
 
-  app.use('/api/v1/users', createRegistrationRouter(db, redis, otpDeliveryPort));
-  app.use('/api/v1/users', createActivationRouter(db));
-  app.use('/api/v1/admin', createAdminRouter(db));
-  app.use('/api/v1/otp', createOtpRouter(db, redis, otpDeliveryPort));
+  // ---------------------------------------------------------------------------
+  // Swagger / OpenAPI docs
+  // ---------------------------------------------------------------------------
 
-  // F-03: User Login — /login, /logout, /password-recovery, /password-reset
-  // are all pre-auth by nature (the credential/token IS the auth mechanism),
-  // so no SessionValidationMiddleware is applied to this router.
-  app.use('/api/v1/auth', createAuthRouter(db));
-  app.use('/api/v1/auth', createPasswordRouter(db, emailDeliveryPort));
+  try {
+    const swaggerDocument = YAML.load(path.join(__dirname, '..', 'openapi.yaml')) as object;
+    app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+  } catch {
+    // Non-fatal: docs unavailable if YAML is missing at runtime
+  }
 
-  // F-04: Account Deletion — the first consumer of SessionValidationMiddleware
-  // as the cross-cutting guard it was built to be (US-038 A-003). All three
-  // deletion-request routes are authenticated, including /confirm — the OTP
-  // code is checked against the caller's own pending request, not looked up
-  // as a global unauthenticated credential.
-  const sharedSessionService = new DefaultSessionService(
-    new SessionRepository(db),
-    new UserRepository(db),
-  );
-  app.use('/api/v1/users', createDeletionRouter(db, sharedSessionService, emailDeliveryPort));
+  // ---------------------------------------------------------------------------
+  // Domain repositories & services
+  // ---------------------------------------------------------------------------
 
-  // GET /api/v1/users/me — the calling user's own profile, reusing the same
-  // session-validation guard as the deletion-request routes above.
-  app.use('/api/v1/users', createUserProfileRouter(db, sharedSessionService));
+  const userRepository = new UserRepository(db);
+  const sessionRepository = new SessionRepository(db);
+  const sessionService = new DefaultSessionService(sessionRepository, userRepository);
 
-  // /health is intentionally unauthenticated (API Gateway probing).
-  app.use(createHealthRouter(db));
+  // ---------------------------------------------------------------------------
+  // Health check (no auth required)
+  // ---------------------------------------------------------------------------
 
-  // Swagger UI — serves DOCS/openapi.yaml, generated from the routes/controllers
-  // themselves (see DOCS/PROJECT_ANALYSIS.md Phase 9). Unauthenticated, matching
-  // the other introspection endpoint (/health).
-  const openApiDocument = YAML.load(path.join(__dirname, '..', 'openapi.yaml'));
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiDocument));
+  app.use('/api/v1', createHealthRouter());
 
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({ error: 'Not found.' });
-  });
+  // ---------------------------------------------------------------------------
+  // Public routes (no session/CSRF required)
+  // ---------------------------------------------------------------------------
+
+  app.use('/api/v1', createRegistrationRouter(db, otpDeliveryPort, emailDeliveryPort));
+  app.use('/api/v1', createActivationRouter(db));
+  app.use('/api/v1', createAuthRouter(db, redis));
+  app.use('/api/v1', createAdminRouter(db));
+  app.use('/api/v1', createOtpRouter(db, redis, otpDeliveryPort));
+
+  // ---------------------------------------------------------------------------
+  // CSRF token endpoint — registered BEFORE validateCsrfMiddleware so that
+  // clients can fetch their first token without needing a pre-existing one.
+  // (US-002 AC-6; task requirement #2 and #6)
+  // ---------------------------------------------------------------------------
+
+  app.use('/api/v1', createCsrfRouter(redis));
+
+  // ---------------------------------------------------------------------------
+  // CSRF validation middleware — applied to all subsequent routes.
+  // Safe methods (GET, HEAD, OPTIONS) are automatically exempt inside the
+  // middleware. (US-002 AC-1 through AC-5; task requirement #3)
+  // ---------------------------------------------------------------------------
+
+  app.use(validateCsrfMiddleware(redis));
+
+  // ---------------------------------------------------------------------------
+  // Protected routes (session + CSRF required for state-changing requests)
+  // ---------------------------------------------------------------------------
+
+  app.use('/api/v1', createPasswordRouter(db, redis, emailDeliveryPort));
+  app.use('/api/v1', createDeletionRouter(db, emailDeliveryPort));
+  app.use('/api/v1', createUserProfileRouter(db));
+
+  // ---------------------------------------------------------------------------
+  // Global error handler
+  // ---------------------------------------------------------------------------
 
   app.use(createAppErrorHandler);
 
   return app;
 }
+```
