@@ -1,83 +1,71 @@
-import { useNavigate } from "react-router";
-import { AuthHeader }              from "../organisms/AuthHeader";
-import { UserStatsRow }            from "../organisms/UserStatsRow";
-import { ActivityFeed }            from "../organisms/ActivityFeed";
-import { InlineNotificationsPanel }from "../organisms/InlineNotificationsPanel";
-import { QuickAccessStrip }        from "../organisms/QuickAccessStrip";
-import { Footer }                  from "../organisms/Footer";
-import { useCurrentUser }          from "../../lib/useCurrentUser";
-import { getSessionEmail }         from "../../lib/session";
+'use client';
 
-/* Live timestamp shown in the page-title row */
-function LastUpdated() {
-  const now = new Date();
-  const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-  return (
-    <p style={{ color: "#9E9E9E", fontSize: "13px", lineHeight: "18px", letterSpacing: "0.25px" }}>
-      Last updated: <span style={{ color: "#212121", fontWeight: 500 }}>{time}</span>
-    </p>
-  );
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { ReactNode } from 'react';
+
+interface AccountDashboardTemplateProps {
+  children?: ReactNode;
+  activeSection?: string;
 }
 
-export function AccountDashboardTemplate() {
-  const navigate = useNavigate();
-  const { profile } = useCurrentUser();
-  const userName  = profile?.username ?? "";
-  const userEmail = profile?.email ?? getSessionEmail() ?? "";
+export function AccountDashboardTemplate({
+  children,
+  activeSection,
+}: AccountDashboardTemplateProps) {
+  const router = useRouter();
+
+  const navItems = [
+    {
+      label: 'Profile',
+      href: '/account/profile',
+      section: 'profile',
+    },
+    {
+      label: 'Change Password',
+      href: '/account/change-password',
+      section: 'change-password',
+    },
+    {
+      label: 'Delete Account',
+      href: '/account/delete',
+      section: 'delete',
+    },
+  ];
 
   return (
-    <div
-      className="min-h-screen flex flex-col"
-      style={{ fontFamily: "'Inter','SF Pro Text','Roboto',sans-serif", backgroundColor: "#F5F5F5" }}
-    >
-      {/* Skip link */}
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 z-[100] px-4 py-2 rounded-md bg-[#1A73E8] text-white text-sm font-medium"
-      >
-        Skip to main content
-      </a>
-
-      {/* Fixed authenticated header */}
-      <AuthHeader userName={userName} userEmail={userEmail} />
-
-      {/* Scrollable main content — no sidebar, full width */}
-      <main
-        id="main-content"
-        className="flex-1 flex flex-col"
-        style={{ paddingTop: "64px" /* header offset */ }}
-      >
-        <div className="flex-1 flex flex-col gap-6 px-6 py-6 w-full max-w-[1200px] mx-auto">
-
-          {/* ── Page Title Row ──────────────────────────────── */}
-          <div className="flex items-center justify-between">
-            <h1 style={{ color: "#212121" }}>Dashboard</h1>
-            <LastUpdated />
-          </div>
-
-          {/* ── Summary Widgets Row ──────────────────────────── */}
-          <UserStatsRow activeSessions={profile?.activeSessions ?? null} status={profile?.status ?? null} />
-
-          {/* ── Content Row (60/40 split) ───────────────────── */}
-          <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-            {/* Left — Activity Feed (60% ≈ 3/5) */}
-            <div className="xl:col-span-3">
-              <ActivityFeed />
-            </div>
-
-            {/* Right — Notifications Panel (40% ≈ 2/5) */}
-            <div className="xl:col-span-2">
-              <InlineNotificationsPanel />
-            </div>
-          </div>
-
-          {/* ── Quick Access Strip ──────────────────────────── */}
-          <QuickAccessStrip />
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-4xl mx-auto py-10 px-4 sm:px-6 lg:px-8">
+        <h1 className="text-2xl font-bold text-gray-900 mb-8">Account Settings</h1>
+        <div className="flex flex-col sm:flex-row gap-6">
+          <nav className="w-full sm:w-64 flex-shrink-0">
+            <ul className="space-y-1">
+              {navItems.map((item) => {
+                const isActive = activeSection === item.section;
+                return (
+                  <li key={item.section}>
+                    <Link
+                      href={item.href}
+                      className={`block px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                        isActive
+                          ? 'bg-indigo-600 text-white'
+                          : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                      }`}
+                    >
+                      {item.label}
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+          <main className="flex-1 bg-white rounded-lg shadow p-6">
+            {children}
+          </main>
         </div>
-
-        {/* Footer — bottom of scrollable content */}
-        <Footer />
-      </main>
+      </div>
     </div>
   );
 }
+
+export default AccountDashboardTemplate;

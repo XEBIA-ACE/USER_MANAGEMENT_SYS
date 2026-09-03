@@ -1,166 +1,80 @@
-import type {
-  RegisterUserErrorResponse,
-  RegisterUserRequest,
-  RegisterUserSuccessResponse,
-} from "../types/registration.types";
-import type {
-  OtpErrorResponse,
-  ResendOtpRequest,
-  ResendOtpSuccessResponse,
-  VerifyOtpRequest,
-  VerifyOtpSuccessResponse,
-} from "../types/otp.types";
-import type {
-  LoginErrorResponse,
-  LoginRequest,
-  LoginSuccessResponse,
-} from "../types/login.types";
-import type {
-  CancelDeletionErrorResponse,
-  CancelDeletionSuccessResponse,
-  ConfirmDeletionErrorResponse,
-  ConfirmDeletionSuccessResponse,
-  RequestDeletionErrorResponse,
-  RequestDeletionSuccessResponse,
-} from "../types/deletion.types";
-import type { ProfileErrorResponse, UserProfileResponse } from "../types/profile.types";
+import { authRequest } from "./auth-request";
 
-// Empty string = same-origin relative URLs (all call paths already start with
-// /api/...): in Kubernetes/docker the nginx in this image and the ALB route
-// /api to the backend, so one build works in every environment. `??` (not ||)
-// so an explicitly-empty build arg isn't clobbered by a localhost fallback.
-// Local `vite dev` keeps working via the /api proxy in vite.config.ts.
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
+export interface ApiError {
+  message: string;
+  errors?: string[];
+}
 
-export type ApiResult<TSuccess, TError> =
-  | { ok: true; data: TSuccess }
-  | { ok: false; status: number; body: TError };
+async function parseErrorResponse(response: Response): Promise<ApiError> {
+  try {
+    const data = await response.json();
+    return data as ApiError;
+  } catch {
+    return { message: response.statusText || "An unexpected error occurred" };
+  }
+}
 
-async function postJson<TSuccess, TError>(
-  path: string,
-  payload: unknown
-): Promise<ApiResult<TSuccess, TError>> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+export async function getUserProfile(): Promise<{
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+}> {
+  const response = await authRequest("/user/profile", {
+    method: "GET",
   });
 
-  const body = await response.json();
-
-  if (response.ok) {
-    return { ok: true, data: body as TSuccess };
+  if (!response.ok) {
+    const error = await parseErrorResponse(response);
+    throw error;
   }
 
-  return { ok: false, status: response.status, body: body as TError };
+  return response.json();
 }
 
-export async function registerUser(
-  payload: RegisterUserRequest
-): Promise<ApiResult<RegisterUserSuccessResponse, RegisterUserErrorResponse>> {
-  return postJson<RegisterUserSuccessResponse, RegisterUserErrorResponse>(
-    "/api/v1/users/register",
-    payload
-  );
-}
-
-export async function verifyOtp(
-  payload: VerifyOtpRequest
-): Promise<ApiResult<VerifyOtpSuccessResponse, OtpErrorResponse>> {
-  return postJson<VerifyOtpSuccessResponse, OtpErrorResponse>("/api/v1/otp/verify", payload);
-}
-
-export async function resendOtp(
-  payload: ResendOtpRequest
-): Promise<ApiResult<ResendOtpSuccessResponse, OtpErrorResponse>> {
-  return postJson<ResendOtpSuccessResponse, OtpErrorResponse>("/api/v1/otp/resend", payload);
-}
-
-export async function loginUser(
-  payload: LoginRequest
-): Promise<ApiResult<LoginSuccessResponse, LoginErrorResponse>> {
-  return postJson<LoginSuccessResponse, LoginErrorResponse>("/api/v1/auth/login", payload);
-}
-
-export async function logoutUser(token: string): Promise<void> {
-  await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-}
-
-async function authRequest<TSuccess, TError>(
-  path: string,
-  method: "GET" | "POST" | "DELETE",
-  token: string
-): Promise<ApiResult<TSuccess, TError>> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method,
-    headers: { Authorization: `Bearer ${token}` },
+export async function updateUserProfile(data: {
+  firstName: string;
+  lastName: string;
+}): Promise<void> {
+  const response = await authRequest("/user/profile", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(data),
   });
 
-  const body = await response.json();
-
-  if (response.ok) {
-    return { ok: true, data: body as TSuccess };
+  if (!response.ok) {
+    const error = await parseErrorResponse(response);
+    throw error;
   }
-
-  return { ok: false, status: response.status, body: body as TError };
 }
 
-async function authPostJson<TSuccess, TError>(
-  path: string,
-  token: string,
-  payload: unknown
-): Promise<ApiResult<TSuccess, TError>> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+export async function deleteAccount(): Promise<void> {
+  const response = await authRequest("/user/deletion", {
+    method: "DELETE",
   });
 
-  const body = await response.json();
-
-  if (response.ok) {
-    return { ok: true, data: body as TSuccess };
+  if (!response.ok) {
+    const error = await parseErrorResponse(response);
+    throw error;
   }
-
-  return { ok: false, status: response.status, body: body as TError };
 }
 
-export async function requestAccountDeletion(
-  token: string
-): Promise<ApiResult<RequestDeletionSuccessResponse, RequestDeletionErrorResponse>> {
-  return authRequest<RequestDeletionSuccessResponse, RequestDeletionErrorResponse>(
-    "/api/v1/users/deletion-requests",
-    "POST",
-    token
-  );
-}
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const response = await authRequest("/password/change", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
 
-export async function cancelAccountDeletion(
-  token: string
-): Promise<ApiResult<CancelDeletionSuccessResponse, CancelDeletionErrorResponse>> {
-  return authRequest<CancelDeletionSuccessResponse, CancelDeletionErrorResponse>(
-    "/api/v1/users/deletion-requests",
-    "DELETE",
-    token
-  );
-}
-
-export async function confirmAccountDeletion(
-  token: string,
-  code: string
-): Promise<ApiResult<ConfirmDeletionSuccessResponse, ConfirmDeletionErrorResponse>> {
-  return authPostJson<ConfirmDeletionSuccessResponse, ConfirmDeletionErrorResponse>(
-    "/api/v1/users/deletion-requests/confirm",
-    token,
-    { code }
-  );
-}
-
-export async function getCurrentUser(
-  token: string
-): Promise<ApiResult<UserProfileResponse, ProfileErrorResponse>> {
-  return authRequest<UserProfileResponse, ProfileErrorResponse>("/api/v1/users/me", "GET", token);
+  if (!response.ok) {
+    const error = await parseErrorResponse(response);
+    throw error;
+  }
 }
