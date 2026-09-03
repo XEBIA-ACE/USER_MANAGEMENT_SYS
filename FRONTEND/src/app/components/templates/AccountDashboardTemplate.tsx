@@ -1,83 +1,163 @@
-import { useNavigate } from "react-router";
-import { AuthHeader }              from "../organisms/AuthHeader";
-import { UserStatsRow }            from "../organisms/UserStatsRow";
-import { ActivityFeed }            from "../organisms/ActivityFeed";
-import { InlineNotificationsPanel }from "../organisms/InlineNotificationsPanel";
-import { QuickAccessStrip }        from "../organisms/QuickAccessStrip";
-import { Footer }                  from "../organisms/Footer";
-import { useCurrentUser }          from "../../lib/useCurrentUser";
-import { getSessionEmail }         from "../../lib/session";
+```tsx
+import React, { useState } from "react";
+import { useCurrentUser } from "../../lib/useCurrentUser";
+import { updateUserName } from "../../lib/api-client";
+import { ProfileErrorResponse } from "../../types/profile.types";
 
-/* Live timestamp shown in the page-title row */
-function LastUpdated() {
-  const now = new Date();
-  const time = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-  return (
-    <p style={{ color: "#9E9E9E", fontSize: "13px", lineHeight: "18px", letterSpacing: "0.25px" }}>
-      Last updated: <span style={{ color: "#212121", fontWeight: 500 }}>{time}</span>
-    </p>
-  );
+const NAME_MAX_LENGTH = 100;
+// Unicode letters, marks, apostrophes, hyphens, and spaces
+const NAME_PATTERN = /^[\p{L}\p{M}'\- ]+$/u;
+
+function validateName(name: string): string | null {
+  if (!name || name.trim().length === 0) {
+    return "Name cannot be empty.";
+  }
+  if (name.length > NAME_MAX_LENGTH) {
+    return `Name must be ${NAME_MAX_LENGTH} characters or fewer.`;
+  }
+  if (!NAME_PATTERN.test(name)) {
+    return "Name contains invalid characters. Only letters, spaces, hyphens, and apostrophes are allowed.";
+  }
+  return null;
 }
 
-export function AccountDashboardTemplate() {
-  const navigate = useNavigate();
-  const { profile } = useCurrentUser();
-  const userName  = profile?.username ?? "";
-  const userEmail = profile?.email ?? getSessionEmail() ?? "";
+export function AccountDashboardTemplate(): JSX.Element {
+  const { user, loading, error, refetch } = useCurrentUser();
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [nameInput, setNameInput] = useState("");
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleEditClick = (): void => {
+    setNameInput(user?.name ?? "");
+    setValidationError(null);
+    setServerError(null);
+    setIsEditing(true);
+  };
+
+  const handleCancelClick = (): void => {
+    setIsEditing(false);
+    setNameInput("");
+    setValidationError(null);
+    setServerError(null);
+  };
+
+  const handleSaveClick = async (): Promise<void> => {
+    setValidationError(null);
+    setServerError(null);
+
+    const clientError = validateName(nameInput);
+    if (clientError !== null) {
+      setValidationError(clientError);
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      await updateUserName(nameInput);
+      await refetch();
+      setIsEditing(false);
+      setNameInput("");
+    } catch (err) {
+      const profileError = err as ProfileErrorResponse;
+      if (profileError && typeof profileError.message === "string") {
+        setServerError(profileError.message);
+      } else {
+        setServerError("An unexpected error occurred. Please try again.");
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const inlineError = validationError ?? serverError;
+
+  if (loading) {
+    return (
+      <div>
+        <p>Loading...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div>
+        <p>Failed to load profile.</p>
+      </div>
+    );
+  }
 
   return (
-    <div
-      className="min-h-screen flex flex-col"
-      style={{ fontFamily: "'Inter','SF Pro Text','Roboto',sans-serif", backgroundColor: "#F5F5F5" }}
-    >
-      {/* Skip link */}
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 z-[100] px-4 py-2 rounded-md bg-[#1A73E8] text-white text-sm font-medium"
-      >
-        Skip to main content
-      </a>
+    <div>
+      <h1>Account Dashboard</h1>
 
-      {/* Fixed authenticated header */}
-      <AuthHeader userName={userName} userEmail={userEmail} />
+      <section>
+        <h2>Profile</h2>
 
-      {/* Scrollable main content — no sidebar, full width */}
-      <main
-        id="main-content"
-        className="flex-1 flex flex-col"
-        style={{ paddingTop: "64px" /* header offset */ }}
-      >
-        <div className="flex-1 flex flex-col gap-6 px-6 py-6 w-full max-w-[1200px] mx-auto">
-
-          {/* ── Page Title Row ──────────────────────────────── */}
-          <div className="flex items-center justify-between">
-            <h1 style={{ color: "#212121" }}>Dashboard</h1>
-            <LastUpdated />
-          </div>
-
-          {/* ── Summary Widgets Row ──────────────────────────── */}
-          <UserStatsRow activeSessions={profile?.activeSessions ?? null} status={profile?.status ?? null} />
-
-          {/* ── Content Row (60/40 split) ───────────────────── */}
-          <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
-            {/* Left — Activity Feed (60% ≈ 3/5) */}
-            <div className="xl:col-span-3">
-              <ActivityFeed />
-            </div>
-
-            {/* Right — Notifications Panel (40% ≈ 2/5) */}
-            <div className="xl:col-span-2">
-              <InlineNotificationsPanel />
-            </div>
-          </div>
-
-          {/* ── Quick Access Strip ──────────────────────────── */}
-          <QuickAccessStrip />
+        <div>
+          <label htmlFor="account-email">Email</label>
+          <p id="account-email">{user?.email}</p>
         </div>
 
-        {/* Footer — bottom of scrollable content */}
-        <Footer />
-      </main>
+        <div>
+          <label>Name</label>
+          {isEditing ? (
+            <div>
+              <label htmlFor="account-name-input" className="sr-only">
+                Name
+              </label>
+              <input
+                id="account-name-input"
+                type="text"
+                aria-label="Name"
+                aria-describedby={inlineError ? "name-edit-error" : undefined}
+                value={nameInput}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+                  setNameInput(e.target.value)
+                }
+                disabled={isSaving}
+                maxLength={NAME_MAX_LENGTH + 1}
+              />
+              {inlineError !== null && (
+                <p
+                  id="name-edit-error"
+                  role="alert"
+                  aria-live="polite"
+                >
+                  {inlineError}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={handleSaveClick}
+                disabled={isSaving}
+              >
+                {isSaving ? "Saving..." : "Save"}
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelClick}
+                disabled={isSaving}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <div>
+              <span>{user?.name}</span>
+              <button type="button" onClick={handleEditClick}>
+                Edit
+              </button>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
+
+export default AccountDashboardTemplate;
+```

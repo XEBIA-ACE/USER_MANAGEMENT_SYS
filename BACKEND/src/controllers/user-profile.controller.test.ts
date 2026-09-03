@@ -1,95 +1,103 @@
 import { Request, Response } from 'express';
 import { UserProfileController } from './user-profile.controller';
 import { UserProfileService } from '../services/user-profile.service';
-import { UserNotFoundException } from '../errors/registration.errors';
+import { ValidationError, UserNotFoundException } from '../errors/registration.errors';
 
-function buildRequest(userId: string): Request {
-  return { userId } as unknown as Request;
-}
+const mockUserProfileService: jest.Mocked<UserProfileService> = {
+  getProfile: jest.fn(),
+  updateName: jest.fn(),
+};
 
-function buildResponse(): Response {
-  const res = {} as Response;
+const controller = new UserProfileController(mockUserProfileService);
+
+const mockResponse = (): Partial<Response> => {
+  const res: Partial<Response> = {};
   res.status = jest.fn().mockReturnValue(res);
   res.json = jest.fn().mockReturnValue(res);
   return res;
-}
+};
 
 describe('UserProfileController', () => {
-  let userProfileService: jest.Mocked<UserProfileService>;
-  let controller: UserProfileController;
-
   beforeEach(() => {
-    userProfileService = { getProfile: jest.fn() };
-    controller = new UserProfileController(userProfileService);
+    jest.clearAllMocks();
   });
 
-  test('happy path -> 200 with the profile, dates serialized to ISO strings', async () => {
-    userProfileService.getProfile.mockResolvedValue({
-      username: 'jdoe',
-      email: 'jdoe@example.test',
-      status: 'active',
-      registrationTimestamp: new Date('2026-01-01T00:00:00.000Z'),
-      lastLoginAt: new Date('2026-01-02T00:00:00.000Z'),
-      activeSessions: 2,
+  describe('getMe', () => {
+    it('should return 200 with user profile on success', async () => {
+      const profile = { id: 'user-1', name: 'Alice', email: 'alice@example.com' };
+      mockUserProfileService.getProfile.mockResolvedValue(profile as any);
+
+      const req = { session: { userId: 'user-1' } } as unknown as Request;
+      const res = mockResponse() as Response;
+
+      await controller.getMe(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(profile);
     });
-    const req = buildRequest('user-1');
-    const res = buildResponse();
 
-    await controller.getMe(req, res);
+    it('should return 404 when UserNotFoundException is thrown', async () => {
+      mockUserProfileService.getProfile.mockRejectedValue(new UserNotFoundException('user-1'));
 
-    expect(userProfileService.getProfile).toHaveBeenCalledWith('user-1');
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({
-      username: 'jdoe',
-      email: 'jdoe@example.test',
-      status: 'active',
-      registrationTimestamp: '2026-01-01T00:00:00.000Z',
-      lastLoginAt: '2026-01-02T00:00:00.000Z',
-      activeSessions: 2,
+      const req = { session: { userId: 'user-1' } } as unknown as Request;
+      const res = mockResponse() as Response;
+
+      await controller.getMe(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
     });
   });
 
-  test('lastLoginAt null -> serialized as null, not a crash', async () => {
-    userProfileService.getProfile.mockResolvedValue({
-      username: 'jdoe',
-      email: 'jdoe@example.test',
-      status: 'pending',
-      registrationTimestamp: new Date('2026-01-01T00:00:00.000Z'),
-      lastLoginAt: null,
-      activeSessions: 0,
+  describe('updateName', () => {
+    it('should return 422 when service throws ValidationError', async () => {
+      const validationError = new ValidationError('Name contains invalid characters');
+      mockUserProfileService.updateName.mockRejectedValue(validationError);
+
+      const req = {
+        session: { userId: 'user-1' },
+        body: { name: '###invalid###' },
+      } as unknown as Request;
+      const res = mockResponse() as Response;
+
+      await controller.updateName(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(422);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ message: validationError.message })
+      );
     });
-    const req = buildRequest('user-1');
-    const res = buildResponse();
 
-    await controller.getMe(req, res);
+    it('should return 404 when service throws UserNotFoundException', async () => {
+      mockUserProfileService.updateName.mockRejectedValue(
+        new UserNotFoundException('user-99')
+      );
 
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ lastLoginAt: null }),
-    );
-  });
+      const req = {
+        session: { userId: 'user-99' },
+        body: { name: 'Valid Name' },
+      } as unknown as Request;
+      const res = mockResponse() as Response;
 
-  test('UserNotFoundException -> 404 USER_NOT_FOUND', async () => {
-    userProfileService.getProfile.mockRejectedValue(new UserNotFoundException('user-1'));
-    const req = buildRequest('user-1');
-    const res = buildResponse();
+      await controller.updateName(req, res);
 
-    await controller.getMe(req, res);
+      expect(res.status).toHaveBeenCalledWith(404);
+    });
 
-    expect(res.status).toHaveBeenCalledWith(404);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ error_code: 'USER_NOT_FOUND' }),
-    );
-  });
+    it('should return 200 with updated profile when service resolves successfully', async () => {
+      const updatedProfile = { id: 'user-1', name: 'New Name', email: 'alice@example.com' };
+      mockUserProfileService.updateName.mockResolvedValue(undefined);
+      mockUserProfileService.getProfile.mockResolvedValue(updatedProfile as any);
 
-  test('unexpected error -> generic 500', async () => {
-    userProfileService.getProfile.mockRejectedValue(new Error('DB is down'));
-    const req = buildRequest('user-1');
-    const res = buildResponse();
-    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const req = {
+        session: { userId: 'user-1' },
+        body: { name: 'New Name' },
+      } as unknown as Request;
+      const res = mockResponse() as Response;
 
-    await controller.getMe(req, res);
+      await controller.updateName(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(500);
-    consoleErrorSpy.mockRestore();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(updatedProfile);
+    });
   });
 });

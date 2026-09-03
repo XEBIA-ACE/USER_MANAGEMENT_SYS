@@ -1,31 +1,42 @@
-import { useEffect, useState } from "react";
-import { getCurrentUser } from "./api-client";
-import { getSessionToken } from "./session";
-import type { UserProfileResponse } from "../types/profile.types";
+```typescript
+import { useState, useEffect, useCallback } from "react";
+import { UserProfileResponse, ProfileErrorResponse } from "../types/profile.types";
+import { getUserProfile } from "./api-client";
 
-export function useCurrentUser() {
-  const [profile, setProfile] = useState<UserProfileResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+export interface UseCurrentUserResult {
+  user: UserProfileResponse | null;
+  loading: boolean;
+  error: ProfileErrorResponse | null;
+  refetch: () => Promise<void>;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    const token = getSessionToken();
+export function useCurrentUser(): UseCurrentUserResult {
+  const [user, setUser] = useState<UserProfileResponse | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<ProfileErrorResponse | null>(null);
 
-    if (!token) {
+  const fetchUser = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const profile = await getUserProfile();
+      setUser(profile);
+    } catch (err) {
+      setError(err as ProfileErrorResponse);
+    } finally {
       setLoading(false);
-      return;
     }
-
-    getCurrentUser(token).then((result) => {
-      if (cancelled) return;
-      if (result.ok) setProfile(result.data);
-      setLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
-  return { profile, loading };
+  useEffect(() => {
+    void fetchUser();
+  }, [fetchUser]);
+
+  return {
+    user,
+    loading,
+    error,
+    refetch: fetchUser,
+  };
 }
+```
