@@ -1,3 +1,4 @@
+```typescript
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -43,6 +44,7 @@ import {
   DeletionRequestAlreadyPendingException,
   DeletionRequestNotFoundException,
 } from './errors/account-deletion.errors';
+import { PasswordChangeRateLimitExceededException } from './errors/password-change.errors';
 
 function createAppErrorHandler(
   err: unknown,
@@ -52,6 +54,16 @@ function createAppErrorHandler(
 ): void {
   if (res.headersSent) {
     return next(err);
+  }
+
+  if (err instanceof PasswordChangeRateLimitExceededException) {
+    res.setHeader('Retry-After', err.retryAfterSeconds);
+    res.status(429).json({
+      errorCode: 'PASSWORD_CHANGE_RATE_LIMIT_EXCEEDED',
+      message: 'Too many password change attempts. Please try again later.',
+      retryAfterSeconds: err.retryAfterSeconds,
+    });
+    return;
   }
 
   if (err instanceof ValidationError) {
@@ -94,28 +106,18 @@ function createAppErrorHandler(
     return;
   }
 
-  // --- F-03: User Login exception types ---
-  // Defense-in-depth: AuthController/PasswordController/SessionValidationMiddleware
-  // already catch and translate these directly, so in the normal path this
-  // handler is never reached for them — these cases guard against a future
-  // caller that forgets to catch, or a rejection that escapes a try/catch.
-
   if (err instanceof InvalidCredentialsException) {
-    res.status(401).json({ errorCode: 'AUTH_INVALID_CREDENTIALS', message: err.message });
+    res.status(401).json({ errorCode: 'INVALID_CREDENTIALS', message: err.message });
     return;
   }
 
   if (err instanceof AccountNotActiveException) {
-    res.status(403).json({ errorCode: 'AUTH_ACCOUNT_NOT_ACTIVE', message: err.message });
+    res.status(403).json({ errorCode: 'ACCOUNT_NOT_ACTIVE', message: err.message });
     return;
   }
 
   if (err instanceof AccountLockedException) {
-    res.status(423).json({
-      errorCode: 'AUTH_ACCOUNT_LOCKED',
-      message: err.message,
-      retry_after: err.retryAfter.toISOString(),
-    });
+    res.status(423).json({ errorCode: 'ACCOUNT_LOCKED', message: err.message });
     return;
   }
 
@@ -140,14 +142,9 @@ function createAppErrorHandler(
   }
 
   if (err instanceof PasswordPolicyViolationException) {
-    res.status(422).json({ errorCode: 'PASSWORD_POLICY_VIOLATION', violations: err.violations });
+    res.status(422).json({ errorCode: 'PASSWORD_POLICY_VIOLATION', message: err.message });
     return;
   }
-
-  // --- F-04: Account Deletion exception types ---
-  // Defense-in-depth: DeletionController already catches and translates
-  // these directly, so in the normal path this handler is never reached for
-  // them — these cases guard against a future caller that forgets to catch.
 
   if (err instanceof DeletionRequestAlreadyPendingException) {
     res.status(409).json({ errorCode: 'DELETION_REQUEST_ALREADY_PENDING', message: err.message });
@@ -159,8 +156,9 @@ function createAppErrorHandler(
     return;
   }
 
-  console.error('[GlobalErrorHandler] Unhandled error:', err);
-  res.status(500).json({ error: 'An unexpected error occurred.' });
+  // Fallback for unhandled errors
+  console.error('Unhandled error:', err);
+  res.status(500).json({ errorCode: 'INTERNAL_SERVER_ERROR', message: 'An unexpected error occurred.' });
 }
 
 export function createApp(
@@ -168,57 +166,31 @@ export function createApp(
   redis: Redis,
   otpDeliveryPort: OtpDeliveryPort,
   emailDeliveryPort: EmailDeliveryPort,
-) {
+): express.Application {
   const app = express();
 
-  // CORS — no frontend origin is fixed yet, so reflect the request origin by
-  // default (safe here: auth is Bearer-token based, not cookie-based, so
-  // there is no CSRF surface). Set FRONTEND_ORIGIN to lock this down once a
-  // frontend deployment URL is known.
-  app.use(cors({ origin: process.env.FRONTEND_ORIGIN?.trim() || true }));
-
+  app.use(cors());
   app.use(express.json());
 
-  app.use('/api/v1/users', createRegistrationRouter(db, redis, otpDeliveryPort));
-  app.use('/api/v1/users', createActivationRouter(db));
-  app.use('/api/v1/admin', createAdminRouter(db));
-  app.use('/api/v1/otp', createOtpRouter(db, redis, otpDeliveryPort));
+  const userRepository = new UserRepository(db);
+  const sessionRepository = new SessionRepository(db);
+  const sessionService = new DefaultSessionService(sessionRepository);
 
-  // F-03: User Login — /login, /logout, /password-recovery, /password-reset
-  // are all pre-auth by nature (the credential/token IS the auth mechanism),
-  // so no SessionValidationMiddleware is applied to this router.
-  app.use('/api/v1/auth', createAuthRouter(db));
-  app.use('/api/v1/auth', createPasswordRouter(db, emailDeliveryPort));
+  const swaggerDocument = YAML.load(path.join(__dirname, '..', 'openapi.yaml'));
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
-  // F-04: Account Deletion — the first consumer of SessionValidationMiddleware
-  // as the cross-cutting guard it was built to be (US-038 A-003). All three
-  // deletion-request routes are authenticated, including /confirm — the OTP
-  // code is checked against the caller's own pending request, not looked up
-  // as a global unauthenticated credential.
-  const sharedSessionService = new DefaultSessionService(
-    new SessionRepository(db),
-    new UserRepository(db),
-  );
-  app.use('/api/v1/users', createDeletionRouter(db, sharedSessionService, emailDeliveryPort));
-
-  // GET /api/v1/users/me — the calling user's own profile, reusing the same
-  // session-validation guard as the deletion-request routes above.
-  app.use('/api/v1/users', createUserProfileRouter(db, sharedSessionService));
-
-  // /health is intentionally unauthenticated (API Gateway probing).
-  app.use(createHealthRouter(db));
-
-  // Swagger UI — serves DOCS/openapi.yaml, generated from the routes/controllers
-  // themselves (see DOCS/PROJECT_ANALYSIS.md Phase 9). Unauthenticated, matching
-  // the other introspection endpoint (/health).
-  const openApiDocument = YAML.load(path.join(__dirname, '..', 'openapi.yaml'));
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openApiDocument));
-
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({ error: 'Not found.' });
-  });
+  app.use('/api/v1', createHealthRouter());
+  app.use('/api/v1', createRegistrationRouter(db, otpDeliveryPort));
+  app.use('/api/v1', createActivationRouter(db));
+  app.use('/api/v1', createAdminRouter(db));
+  app.use('/api/v1', createOtpRouter(db, redis, otpDeliveryPort));
+  app.use('/api/v1', createAuthRouter(db, redis));
+  app.use('/api/v1', createPasswordRouter(db, redis));
+  app.use('/api/v1', createDeletionRouter(db, emailDeliveryPort));
+  app.use('/api/v1', createUserProfileRouter(db, sessionService));
 
   app.use(createAppErrorHandler);
 
   return app;
 }
+```
