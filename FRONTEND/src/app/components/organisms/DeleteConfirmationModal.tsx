@@ -1,4 +1,8 @@
+import { useEffect, useRef } from "react";
 import { AlertTriangle, X } from "lucide-react";
+
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface DeleteConfirmationModalProps {
   isOpen: boolean;
@@ -15,6 +19,53 @@ export function DeleteConfirmationModal({
   onConfirm,
   onCancel,
 }: DeleteConfirmationModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const onCancelRef = useRef(onCancel);
+  const loadingRef  = useRef(loading);
+  onCancelRef.current = onCancel;
+  loadingRef.current  = loading;
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    cancelRef.current?.focus();
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (!loadingRef.current) onCancelRef.current();
+        return;
+      }
+
+      if (e.key !== "Tab" || !dialogRef.current) return;
+
+      const focusable = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)
+      );
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last  = focusable[focusable.length - 1];
+      const active = document.activeElement;
+
+      if (e.shiftKey && (active === first || !dialogRef.current.contains(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !dialogRef.current.contains(active))) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previouslyFocused?.focus?.();
+    };
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return (
@@ -35,6 +86,7 @@ export function DeleteConfirmationModal({
 
       {/* Dialog card — 480px, elevated */}
       <div
+        ref={dialogRef}
         className="relative w-full rounded-xl border border-[#E0E0E0] bg-white"
         style={{
           maxWidth: "480px",
@@ -46,7 +98,9 @@ export function DeleteConfirmationModal({
       >
         {/* Close [X] */}
         <button
+          type="button"
           onClick={onCancel}
+          disabled={loading}
           aria-label="Close dialog"
           className="absolute top-4 right-4 flex items-center justify-center w-8 h-8 rounded-lg text-[#9E9E9E] hover:text-[#212121] hover:bg-[#F5F5F5] transition-colors"
         >
@@ -131,6 +185,7 @@ export function DeleteConfirmationModal({
 
           {/* Cancel — secondary outlined, right */}
           <button
+            ref={cancelRef}
             type="button"
             onClick={onCancel}
             disabled={loading}
