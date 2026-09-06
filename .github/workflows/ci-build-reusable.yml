@@ -119,15 +119,15 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ (inputs.registries == '' || inputs.registries == '[]') && format('local/{0}', matrix.service.name) ||
+        images: ${{ (inputs.registries == '' || inputs.registries == '[]') && format('local/{0}', matrix.service) ||
           inputs.registries }}
         tags: type=sha,prefix=sha-,format=short
     - name: Build image
       id: build
       uses: docker/build-push-action@v5
       with:
-        context: ${{ matrix.service.build_context || '.' }}
-        file: ${{ matrix.service.build_context || '.' }}/${{ matrix.service.dockerfile || 'Dockerfile' }}
+        context: ${{ matrix.service }}
+        file: ${{ matrix.service }}/Dockerfile
         push: false
         load: true
         tags: ${{ steps.meta.outputs.tags }}
