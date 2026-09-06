@@ -157,7 +157,7 @@ jobs:
         tags: ci-scan-image:${{ github.sha }}
         cache-from: type=gha
     - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@v0.33.1
+      uses: aquasecurity/trivy-action@v0.36.0
       with:
         image-ref: ci-scan-image:${{ github.sha }}
         format: sarif
