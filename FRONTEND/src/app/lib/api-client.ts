@@ -24,6 +24,11 @@ import type {
   RequestDeletionSuccessResponse,
 } from "../types/deletion.types";
 import type { ProfileErrorResponse, UserProfileResponse } from "../types/profile.types";
+import type {
+  IdpProvider,
+  IdpProvidersErrorResponse,
+  IdpProvidersResponse,
+} from "../types/oidc.types";
 
 // Empty string = same-origin relative URLs (all call paths already start with
 // /api/...): in Kubernetes/docker the nginx in this image and the ALB route
@@ -80,6 +85,21 @@ export async function loginUser(
   payload: LoginRequest
 ): Promise<ApiResult<LoginSuccessResponse, LoginErrorResponse>> {
   return postJson<LoginSuccessResponse, LoginErrorResponse>("/api/v1/auth/login", payload);
+}
+
+// Unauthenticated on purpose: this is called before any session exists, so it
+// must not go through authRequest (which attaches a Bearer token).
+export async function getIdpProviders(): Promise<
+  ApiResult<IdpProvider[], IdpProvidersErrorResponse>
+> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/auth/idp-providers`, { method: "GET" });
+  const body = await response.json();
+
+  if (response.ok) {
+    return { ok: true, data: (body as IdpProvidersResponse).providers };
+  }
+
+  return { ok: false, status: response.status, body: body as IdpProvidersErrorResponse };
 }
 
 export async function logoutUser(token: string): Promise<void> {

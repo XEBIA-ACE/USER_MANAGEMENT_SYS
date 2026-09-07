@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { AuthController } from './auth.controller';
 import { AuthService } from '../services/auth.service';
 import { SessionService } from '../services/session.service';
+import { OidcProviderConfig } from '../config/oidc.config';
 import {
   InvalidCredentialsException,
   AccountNotActiveException,
@@ -203,6 +204,104 @@ describe('AuthController', () => {
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ message: 'Logged out.' });
+    });
+  });
+
+  describe('getIdpProviders', () => {
+    const okta: OidcProviderConfig = {
+      id: 'okta',
+      displayName: 'Okta',
+      enabled: true,
+      clientId: 'okta-client',
+      authorizationEndpoint: 'https://okta.example.test/authorize',
+      redirectUri: 'https://app.example.test/auth/callback',
+      scope: 'openid profile email',
+    };
+    const azure: OidcProviderConfig = {
+      ...okta,
+      id: 'azure-ad',
+      displayName: 'Azure AD',
+      clientId: 'azure-client',
+      authorizationEndpoint: 'https://login.microsoftonline.com/authorize',
+    };
+    const google: OidcProviderConfig = {
+      ...okta,
+      id: 'google',
+      displayName: 'Google Workspace',
+      clientId: 'google-client',
+      authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
+    };
+
+    function providersFrom(res: Response): unknown[] {
+      const payload = (res.json as jest.Mock).mock.calls[0][0] as { providers: unknown[] };
+      return payload.providers;
+    }
+
+    test('no providers configured -> 200 with empty list', () => {
+      const res = buildResponse();
+
+      controller.getIdpProviders(buildRequest(), res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ providers: [] });
+    });
+
+    test('one provider -> single entry with public OIDC parameters only', () => {
+      controller = new AuthController(authService, sessionService, [okta]);
+      const res = buildResponse();
+
+      controller.getIdpProviders(buildRequest(), res);
+
+      expect(providersFrom(res)).toEqual([
+        {
+          id: 'okta',
+          displayName: 'Okta',
+          authorizationEndpoint: 'https://okta.example.test/authorize',
+          clientId: 'okta-client',
+          redirectUri: 'https://app.example.test/auth/callback',
+          scope: 'openid profile email',
+        },
+      ]);
+    });
+
+    test('two providers -> both returned', () => {
+      controller = new AuthController(authService, sessionService, [okta, azure]);
+      const res = buildResponse();
+
+      controller.getIdpProviders(buildRequest(), res);
+
+      expect(providersFrom(res).map((p) => (p as { id: string }).id)).toEqual(['okta', 'azure-ad']);
+    });
+
+    test('three providers -> all returned', () => {
+      controller = new AuthController(authService, sessionService, [okta, azure, google]);
+      const res = buildResponse();
+
+      controller.getIdpProviders(buildRequest(), res);
+
+      expect(providersFrom(res)).toHaveLength(3);
+    });
+
+    test('disabled providers are filtered out', () => {
+      controller = new AuthController(authService, sessionService, [
+        okta,
+        { ...azure, enabled: false },
+        google,
+      ]);
+      const res = buildResponse();
+
+      controller.getIdpProviders(buildRequest(), res);
+
+      expect(providersFrom(res).map((p) => (p as { id: string }).id)).toEqual(['okta', 'google']);
+    });
+
+    test('does not touch session or auth services', () => {
+      controller = new AuthController(authService, sessionService, [okta]);
+
+      controller.getIdpProviders(buildRequest(), buildResponse());
+
+      expect(authService.login).not.toHaveBeenCalled();
+      expect(sessionService.createSession).not.toHaveBeenCalled();
     });
   });
 });
