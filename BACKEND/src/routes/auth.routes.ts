@@ -2,7 +2,8 @@
  * auth.routes.ts
  *
  * Factory function that wires AuthService/SessionService dependencies and
- * returns an Express Router with POST /login and POST /logout mounted.
+ * returns an Express Router with POST /login, POST /logout and
+ * GET /idp-providers mounted.
  * Parent app mounts this at /api/v1/auth.
  */
 
@@ -15,6 +16,7 @@ import { DefaultLoginGuard } from '../services/login-guard';
 import { DefaultSessionService } from '../services/session.service';
 import { DefaultAuthService } from '../services/auth.service';
 import { AuthController } from '../controllers/auth.controller';
+import { loadOidcConfig } from '../config/oidc.config';
 
 export function createAuthRouter(db: Database): Router {
   const router = Router();
@@ -28,13 +30,16 @@ export function createAuthRouter(db: Database): Router {
     new DefaultLoginGuard(userRepository),
     sessionService,
   );
-  const controller = new AuthController(authService, sessionService);
+  const controller = new AuthController(authService, sessionService, loadOidcConfig().providers);
 
   // POST /api/v1/auth/login
   router.post('/login', (req, res) => { void controller.login(req, res); });
 
   // POST /api/v1/auth/logout
   router.post('/logout', (req, res) => { void controller.logout(req, res); });
+
+  // GET /api/v1/auth/idp-providers — unauthenticated; no session middleware.
+  router.get('/idp-providers', (req, res) => { controller.getIdpProviders(req, res); });
 
   return router;
 }

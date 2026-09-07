@@ -6,7 +6,7 @@ export function RequireAuth() {
   const token = getSessionToken();
 
   if (!token) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    return <Navigate to="/auth/idp-select" replace state={{ from: location.pathname }} />;
   }
 
   return <Outlet />;

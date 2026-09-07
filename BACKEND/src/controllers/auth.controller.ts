@@ -1,7 +1,8 @@
 /**
  * auth.controller.ts
  *
- * Entry point for POST /api/v1/auth/login and POST /api/v1/auth/logout.
+ * Entry point for POST /api/v1/auth/login, POST /api/v1/auth/logout and
+ * GET /api/v1/auth/idp-providers.
  *
  * Error mapping (login):
  *   InvalidCredentialsException    → 401  AUTH_INVALID_CREDENTIALS
@@ -23,6 +24,7 @@ import { Request, Response } from 'express';
 import { AuthService } from '../services/auth.service';
 import { SessionService } from '../services/session.service';
 import { LoginRequestDto } from '../types/login.types';
+import { OidcProviderConfig } from '../config/oidc.config';
 import {
   InvalidCredentialsException,
   AccountNotActiveException,
@@ -36,7 +38,28 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly sessionService: SessionService,
+    private readonly idpProviders: ReadonlyArray<OidcProviderConfig> = [],
   ) {}
+
+  /**
+   * Handle GET /api/v1/auth/idp-providers
+   *
+   * Unauthenticated. Returns the enabled IdPs plus the public OIDC parameters
+   * the browser needs to build the authorization request (US-001 FR-02).
+   */
+  getIdpProviders(_req: Request, res: Response): void {
+    const providers = this.idpProviders
+      .filter((p) => p.enabled)
+      .map((p) => ({
+        id: p.id,
+        displayName: p.displayName,
+        authorizationEndpoint: p.authorizationEndpoint,
+        clientId: p.clientId,
+        redirectUri: p.redirectUri,
+        scope: p.scope,
+      }));
+    res.status(200).json({ providers });
+  }
 
   /**
    * Handle POST /api/v1/auth/login
